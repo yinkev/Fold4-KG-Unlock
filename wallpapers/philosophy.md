@@ -1,0 +1,13 @@
+# Reductive Warmth
+
+A design philosophy of distilling beloved forms into their geometric essence — finding the soul of a character in the fewest possible shapes, the most deliberate color choices, and the quietest compositions.
+
+**Form as memory.** Every shape is a decision to keep or discard. A circle becomes a face. A triangle becomes an antler. A cross becomes identity. The philosophy demands ruthless reduction — not simplification, but purification. What remains after countless subtractions is not less, but more. The viewer's memory fills the negative space with warmth, nostalgia, and recognition. This is the work of a craftsman who has drawn the subject a thousand times and knows exactly which line carries the meaning.
+
+**Color as emotion.** The palette is surgically limited — three to five colors maximum, each chosen with the precision of a perfumer selecting notes. Warm tones anchor the composition; a single accent color (always unexpected, always perfect) creates the emotional center. Flat fills only. No gradients, no shadows, no textures. Color boundaries are sharp and confident. Every hue is the product of painstaking calibration — shifted one degree in any direction, the harmony would collapse. The restraint is the craft.
+
+**Space as breathing.** The composition lives in its emptiness. The subject occupies less than a third of the canvas. The remaining space is not background — it is the composition itself. It holds the subject the way a gallery wall holds a painting: with reverence and room. The placement appears effortless but is the result of meticulous adjustment — every element positioned to the pixel with the care of someone at the absolute top of their field.
+
+**Geometry as character.** Organic forms are translated into pure geometric primitives — circles, rectangles, triangles — but arranged with such care that personality survives the translation. The roundness of a circle conveys gentleness. The angle of a triangle conveys energy. The cross-mark conveys identity stronger than any detailed illustration could. This is not minimalism for its own sake — it is the distillation of countless hours of understanding what makes a form recognizable, lovable, and alive.
+
+**Scale as storytelling.** On a narrow canvas, the subject is intimate — close, present, a companion in your pocket. On a wide canvas, the subject is placed in space — smaller, contemplative, existing in a world of color and geometry. Both compositions are meticulously crafted to feel native to their format, never stretched or adapted, always designed from scratch with master-level attention to the unique proportions of each surface.
