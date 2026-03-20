@@ -26,9 +26,8 @@ This project unlocks a KG-locked Galaxy Z Fold 4 entirely from macOS, for free.
 
 ## Status
 
-The unlock fires automatically on every boot via `BOOT_COMPLETED`. The phone is usable.
-
-kgclient may re-lock after a few minutes when it contacts Samsung's servers. Rebooting restores access instantly. The permanent fix (kgclient cache deletion + guardian thread) is documented and ready to deploy.
+> [!NOTE]
+> The unlock fires automatically on every boot via `BOOT_COMPLETED`. The phone is usable. kgclient may re-lock after a few minutes when it contacts Samsung's servers. Rebooting restores access instantly.
 
 <br>
 
@@ -121,55 +120,66 @@ Reboot. The unlock runs automatically.
 
 On `BOOT_COMPLETED`, the payload executes inside `system_server` as UID 1000:
 
-```
-setRemoteLockToLockscreen(false)     clear KG overlay
-unlockCompleted()                    mark unlock done
-unbindFromLockScreen()               unbind from keyguard
-tz_unlockScreen(0)                   RPMB: Locked(3) → Active(2)
-tz_resetRPMB(0)                      reset RPMB state
-ADB_ENABLED = 1                      re-enable USB debugging
-knox.kg.state = "Completed"          set system property
-```
+| Call | Effect |
+|---|---|
+| `setRemoteLockToLockscreen(false)` | Clear KG overlay |
+| `unlockCompleted()` | Mark unlock done |
+| `unbindFromLockScreen()` | Unbind from keyguard |
+| `tz_unlockScreen(0)` | RPMB: Locked(3) → Active(2) |
+| `tz_resetRPMB(0)` | Reset RPMB state |
+| `ADB_ENABLED = 1` | Re-enable USB debugging |
+| `knox.kg.state = "Completed"` | Set system property |
 
 <br>
 
 ## TA state machine
 
-```
- Prenormal(0) ──▶ Checking(1) ──▶ Active(2) ──▶ Locked(3)
-                                      ▲              │
-                                      │              │
-                                      └──────────────┘
-                                     tz_unlockScreen(0)
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Prenormal
+    Prenormal --> Checking : enroll
+    Checking --> Active : enrolled
+    Active --> Locked : server lock
+    Locked --> Active : tz_unlockScreen(0)
+    Active --> Completed : server complete
+    Locked --> Completed : verifyCompleteToken
+
+    classDef target fill:#eff6ff,stroke:#2563eb,color:#1e40af
+    classDef danger fill:#fef2f2,stroke:#ef4444,color:#991b1b
+    classDef success fill:#f0fdf4,stroke:#16a34a,color:#166534
+
+    class Active target
+    class Locked danger
+    class Completed success
 ```
 
-The device starts at **Locked(3)**. We move it to **Active(2)**. kgclient can push it back to Locked if it contacts Samsung's servers — that's the remaining problem.
+The device starts at **Locked** (red). We move it to **Active** (blue) via `tz_unlockScreen(0)`. kgclient can push it back to Locked if it contacts Samsung's servers — that's the remaining problem.
 
 <br>
 
 ## Do not
 
-| | |
-|---|---|
-| `adb install -r` on droppedapk | Corrupts UID mapping. Bake changes into source before exploit. |
-| `pm disable-user` on kgclient | Triggers error 8133 (abnormal detection). |
-| `pm clear` on kgclient | Triggers error 3001 (data cleared detection). |
-| Update firmware | May patch the exploit. |
-| Sign into Samsung account | Gives Samsung a path to re-lock. |
+> [!CAUTION]
+> - **`adb install -r` on droppedapk** — corrupts UID mapping. Bake changes into source before exploit.
+> - **`pm disable-user` on kgclient** — triggers error 8133 (abnormal detection).
+> - **`pm clear` on kgclient** — triggers error 3001 (data cleared detection).
+> - **Update firmware** — may patch the exploit.
+> - **Sign into Samsung account** — gives Samsung a path to re-lock.
 
 <br>
 
 ## Project structure
 
-```
-src/
-  droppedapk/         payload — runs as UID 1000 in system_server
-  exploit/            CVE-2024-34740 stage controller
-  device-owner/       QR provisioning APK
-apk/                  pre-built binaries
-research/             agent research outputs
-docs/                 full documentation, handoff, session log
-```
+| Directory | Contents |
+|---|---|
+| `src/droppedapk/` | Payload — runs as UID 1000 in system_server |
+| `src/exploit/` | CVE-2024-34740 stage controller |
+| `src/device-owner/` | QR provisioning APK |
+| `apk/` | Pre-built binaries |
+| `assets/` | SVG visuals, QR code |
+| `research/` | Agent research outputs |
+| `docs/` | Full documentation, handoff, session log |
 
 <br>
 
@@ -191,10 +201,6 @@ KG state lives in TrustZone RPMB, not in files or settings. To change it, you mu
 
 ---
 
-<div align="center">
+<br>
 
-Built with [AbxOverflow](https://github.com/michalbednarski/AbxOverflow) by Michal Bednarski
-
-March 2026
-
-</div>
+**Sources** — [AbxOverflow (CVE-2024-34740)](https://github.com/michalbednarski/AbxOverflow) · [Samsung Framework (decompiled)](https://github.com/488315/samsung_framework) · [Knox Guard Docs](https://docs.samsungknox.com/admin/knox-guard/)
