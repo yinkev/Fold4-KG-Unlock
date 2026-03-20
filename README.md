@@ -2,20 +2,9 @@
 
 <br>
 
-# Knox Guard Unlock
-
-**Galaxy Z Fold 4 · SM-F936U1 · Android 13**
-
-A free, Mac-native exploit chain that removes Samsung Knox Guard
-using CVE-2024-34740 and TrustZone RPMB manipulation.
+<img src="assets/header.svg" width="840" alt="Knox Guard Unlock">
 
 <br>
-
----
-
-`QR Provisioning` · `CVE-2024-34740` · `UID 1000` · `TrustZone RPMB`
-
----
 
 </div>
 
@@ -31,18 +20,7 @@ This project unlocks a KG-locked Galaxy Z Fold 4 entirely from macOS, for free.
 
 ## The Chain
 
-```
- ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
- │                 │     │                 │     │                 │     │                 │
- │  QR Provision   │────▶│  ABX Overflow   │────▶│  Reflection     │────▶│  TrustZone      │
- │                 │     │                 │     │                 │     │                 │
- │  Device Owner   │     │  CVE-2024-34740 │     │  Call methods   │     │  tz_unlock      │
- │  enables ADB    │     │  drops APK as   │     │  directly on    │     │  Screen(0)      │
- │  via enterprise │     │  UID 1000 in    │     │  KnoxGuardSe    │     │  Locked → Active│
- │  provisioning   │     │  system_server  │     │  Service        │     │  in RPMB        │
- │                 │     │                 │     │                 │     │                 │
- └─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
-```
+<img src="assets/chain.svg" width="840" alt="Exploit chain">
 
 <br>
 

@@ -1,0 +1,46 @@
+<svg width="840" height="200" viewBox="0 0 840 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="840" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#09090b"/>
+      <stop offset="100%" stop-color="#18181b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="200" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="accent2" x1="0" y1="0" x2="300" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0.15"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="840" height="200" rx="12" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="839" height="199" rx="11.5" stroke="#27272a" stroke-width="1"/>
+
+  <!-- Accent line -->
+  <rect x="32" y="32" width="60" height="3" rx="1.5" fill="url(#accent)"/>
+
+  <!-- Title -->
+  <text x="32" y="72" fill="#fafafa" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="32" font-weight="600" letter-spacing="-0.02em">Knox Guard Unlock</text>
+
+  <!-- Subtitle -->
+  <text x="32" y="100" fill="#a1a1aa" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="15" font-weight="400">Galaxy Z Fold 4 · SM-F936U1 · Android 13 · July 2023 SPL</text>
+
+  <!-- Description -->
+  <text x="32" y="132" fill="#71717a" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400">Free, Mac-native exploit chain using CVE-2024-34740 to bypass Samsung Knox Guard</text>
+  <text x="32" y="150" fill="#71717a" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="13" font-weight="400">via UID 1000 code execution and TrustZone RPMB state manipulation.</text>
+
+  <!-- Tags -->
+  <rect x="32" y="166" width="90" height="22" rx="6" fill="url(#accent2)" stroke="#3b82f6" stroke-opacity="0.3" stroke-width="1"/>
+  <text x="77" y="181" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="500" text-anchor="middle">UID 1000</text>
+
+  <rect x="132" y="166" width="120" height="22" rx="6" fill="url(#accent2)" stroke="#3b82f6" stroke-opacity="0.3" stroke-width="1"/>
+  <text x="192" y="181" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="500" text-anchor="middle">CVE-2024-34740</text>
+
+  <rect x="262" y="166" width="100" height="22" rx="6" fill="url(#accent2)" stroke="#3b82f6" stroke-opacity="0.3" stroke-width="1"/>
+  <text x="312" y="181" fill="#60a5fa" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="500" text-anchor="middle">TrustZone</text>
+
+  <rect x="372" y="166" width="70" height="22" rx="6" fill="#22c55e" fill-opacity="0.12" stroke="#22c55e" stroke-opacity="0.3" stroke-width="1"/>
+  <text x="407" y="181" fill="#4ade80" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif" font-size="11" font-weight="500" text-anchor="middle">Working</text>
+</svg>
