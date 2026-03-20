@@ -1,98 +1,101 @@
+# Samsung Fold 4 KG Unlock — Handoff
+
+**Last updated:** March 20, 2026, 00:15 AM PDT
+
 ---
-name: Samsung Fold 4 KG unlock handoff - ACTIVE SESSION March 19 2026
-description: CRITICAL HANDOFF - Full exploit chain in progress, re-running after factory reset
-type: project
+
+## Current State: WORKING
+
+- Phone is set up and usable (home screen, apps, calls, everything)
+- `knox.kg.state = Completed` — stable for 30+ minutes with zero drops
+- ADB connected via "Always Allow" — persists through KG cycles
+- droppedapk (v11-AUTOBOOT) installed with correct UID 1000 via clean exploit
+- OTA updates permanently disabled (`com.wssyncmldm`, `com.sec.android.soagent`)
+- Security policy updater disabled (`com.samsung.android.sm.devicesecurity`)
+- Remote support disabled (`com.rsupport.rs.activity.rsupport.aas2`)
+
 ---
 
-## CURRENT STATE (March 19, 2026 ~3:52 PM)
+## What Was Done (Chronological)
 
-### What just happened:
-1. Factory reset was done (second one today)
-2. QR provisioned with updated DO APK (kgclient disable REMOVED to prevent 8133)
-3. ADB connected: RFCW2006DLA device
-4. AbxOverflow exploit stage 1 launched
-5. Background script polling for reboot → will auto-launch stage 2
-6. TA state is back to Locked(3) — Samsung server re-locked during setup
+### Phase 1: ADB Access
+- Built custom Device Owner APK (`com.kyin.adbenab`) — enables ADB, dev options, pre-loads ADB key
+- Updated DO to NOT disable kgclient (original version caused error 8133)
+- QR enterprise provisioning on factory-reset phone
+- WiFi: `coconutWater` / `9093255140`
 
-### Background task running:
-- Task ID: bh5c3sdze — polls for reboot, auto-launches stage 2
-- Check: `cat /private/tmp/claude-501/-Users-kyin/afd7d744-6ded-4443-a22c-68758d54c73f/tasks/bh5c3sdze.output`
+### Phase 2: CVE-2024-34740 Exploit
+- Restored v11-AUTOBOOT source from snapshot (`/Users/kyin/Projects/Fold4/src/`)
+- Built droppedapk release → copied to exploit app assets → built exploit app
+- Ran stage 1 (ABX overflow → crash) → reboot → stage 2 (patch packages.xml) → reboot
+- droppedapk installed as UID 1000 in system_server
 
-## WHAT NEEDS TO HAPPEN AFTER EXPLOIT COMPLETES
+### Phase 3: Unlock
+- Launched droppedapk with `--ei action 36`
+- All calls succeeded: setRemoteLockToLockscreen(false), unlockCompleted(), unbindFromLockScreen(), tz_unlockScreen(0), tz_resetRPMB(0), ADB re-enable, sysprop Completed
+- KG cleared, phone usable
 
-1. **After stage 2 + second reboot**: check `adb shell pm list packages | grep droppedapk`
-2. **If droppedapk installed**: modify it to auto-run unlock on BOOT_COMPLETED
-3. **The droppedapk's LaunchReceiver.java** needs to run these methods on boot:
-   - `setRemoteLockToLockscreen(false)` on KnoxGuardSeService (via reflection)
-   - `unlockCompleted()` on KnoxGuardSeService
-   - `unbindFromLockScreen()` on KnoxGuardSeService
-   - Re-enable ADB: `Settings.Global.putInt(resolver, "adb_enabled", 1)`
-4. **Also try**: `KnoxGuardNative.tz_unlockScreen(0)` via classloader from KnoxGuardSeService
-5. **Rebuild droppedapk, reinstall with `adb install -r`** (UID 1000 persists)
-6. **Reboot and test** — KG should appear briefly then droppedapk clears it
+### Phase 4: Lockdown
+- Disabled OTA apps via `pm disable-user` (removed "Software update" from Settings entirely)
+- Disabled security policy updater
+- Disabled Remote Support
+- Phone set up with Google account, no Samsung account
 
-## DEVICE INFO
-- Model: SM-F936U1 (Galaxy Z Fold 4)
-- Serial: RFCW2006DLA
-- Firmware: F936U1UES3CWF3 (Android 13, July 2023 SPL)
-- ADB: Connected via QR provisioned DO (com.kyin.adbenab)
-- WiFi: coconutWater / 9093255140
+---
 
-## KEY DISCOVERIES THIS SESSION
+## What We Learned the Hard Way
 
-### KG Architecture (verified on this device)
-- KG state lives in **TrustZone RPMB** — survives reboots but NOT server re-lock
-- `KnoxGuardNative` class in `/system/framework/services.jar` (classes3.dex)
-- Methods: `tz_getTAState(int)`, `tz_unlockScreen(int)`, `tz_userChecking(int)`, `tz_resetRPMB(int, byte[])`, `tz_lockScreen(int)`
-- Must use KnoxGuardSeService's classloader: `kgService.getClass().getClassLoader().loadClass("...KnoxGuardNative")`
-- State machine: 0=Prenormal, 1=Checking, 2=Active, 3=Locked, 4=Completed
+1. **`adb install -r` on droppedapk corrupts UID mapping.** Files become UID 0, package expects UID 1000. BOOT_COMPLETED receiver stops working. The fix: bake all code changes into the source BEFORE running the exploit. Never reinstall after.
 
-### What works from UID 1000 (droppedapk in system_server)
-- `setRemoteLockToLockscreen(false)` — clears KG overlay ✓
-- `unlockCompleted()` — marks unlock complete ✓
-- `unbindFromLockScreen()` — unbinds KG from lock screen ✓
-- `tz_unlockScreen(0)` — returns success, moved TA from 3→2 ✓
-- `tz_resetRPMB(0)` — returns success ✓
-- `SystemProperties.set("knox.kg.state", "Completed")` ✓
-- Reinstalling droppedapk with `adb install -r` preserves UID 1000 ✓
+2. **`enforceProtections` in the guardian loop caused the flashing.** Calling `setApplicationEnabledSetting` on packages every 5 seconds from inside system_server triggered constant system churn. kgclient detected the activity and fought harder.
 
-### What doesn't work
-- `service call knoxguard_service 36` from ADB shell — wrong UID (2000 not 1000)
-- `service call knoxguard_service 36` from droppedapk via Binder — permission check blocks even UID 1000
-- `run-as com.example.abxoverflow.droppedapk` — "not an application"
-- `Runtime.exec("service call ...")` from droppedapk — SELinux blocks exec from system_server
-- `pm disable-user` on kgclient — triggers error 8133 (NEVER DO THIS)
-- Clearing kgclient data — triggers error 3001
-- RPMB state change alone — Samsung server re-locks on next internet connection
-- TX 36 is NOT disable — it's `isVpnExceptionRequired()` (read-only)
+3. **v11-AUTOBOOT (one-shot unlock on boot, no guardian) is what actually works.** The guardian thread (v12+) was unnecessary — v11's single unlock on BOOT_COMPLETED was stable for 30+ minutes. Adding complexity made everything worse.
 
-### Error 8133 explained
-- Computed DYNAMICALLY every boot by IntegritySeUtil.checkKGClientIntegrityAndEnableComponentsWithFlag()
-- Bitfield: 8133 = kgclient disabled + all 6 components disabled
-- Fix: re-enable kgclient + all 6 components (KGDeviceAdminReceiver, SystemIntentReceiver, SelfupdateReceiver, KGEventService, AlarmService, KGProvider)
-- Or: don't disable kgclient in the first place (DO APK was updated to remove this)
+4. **kgclient caches the lock command from Samsung's server.** After WiFi connects and kgclient contacts Samsung, it stores the lock policy locally. On subsequent boots, it replays the cached command. Fresh factory reset = no cache = stable. Established connection = cached = may re-lock.
 
-### The auto-unlock-on-boot plan
-- droppedapk's LaunchReceiver already catches BOOT_COMPLETED
-- Modify it to run the full unlock sequence instead of just starting Activity
-- KG appears briefly on boot → droppedapk clears it within seconds → phone usable
-- Also must re-enable ADB on boot (kgclient disables it when locking)
+5. **The 30-minute monitor showed zero drops this time.** Previous instability was caused by our code changes (enforceProtections, guardian loop, repeated reinstalls), not by kgclient. When we stopped touching things, it stayed stable.
 
-## TOOLS ON MAC
-- ADB: /opt/homebrew/bin/adb
-- Java 17: /opt/homebrew/opt/openjdk@17
-- AbxOverflow: /Users/kyin/Downloads/AbxOverflow/ (modified, both APKs built)
-- DO APK: /Users/kyin/adb_enabler/adbenab.apk (UPDATED — no kgclient disable)
-- HTTP server: running on port 8888 serving from /Users/kyin/Downloads/serve_apk/
-- QR code: /Users/kyin/Downloads/serve_apk/provision_qr.png
-- DNS blocker: /Users/kyin/kg_block_dns.py
-- Full guide: /Users/kyin/Downloads/AbxOverflow/KG_UNLOCK_GUIDE.md
-- Research outputs: kg_research_agent_output.txt, kg_8133_research_output.txt
+6. **File history saved us.** Claude's `.claude/file-history/` had every version of every file. We recovered the exact working code from the 16:32 stable moment.
 
-## IMPORTANT WARNINGS
-- DO NOT run `pm disable-user` on kgclient — triggers 8133
-- DO NOT clear kgclient data — triggers 3001
-- DO NOT factory reset without reason — Samsung server re-locks on internet
-- The DO APK no longer disables kgclient (fixed this session)
-- Always use `--activity-clear-task` flag when launching droppedapk
-- droppedapk version string shows build version (e.g. "BUILD v10")
+7. **Samsung's `pm disable-user` on OTA apps removes the Settings menu entry entirely.** Unexpected but perfect — no way to accidentally trigger an update.
+
+8. **Security policy updates are separate from firmware updates.** Handled by `com.samsung.android.sm.devicesecurity`, not the OTA apps. Had to disable separately.
+
+---
+
+## Critical Rules
+
+- **NEVER** `adb install -r` on the droppedapk
+- **NEVER** `pm disable-user` on kgclient (triggers 8133)
+- **NEVER** `pm clear` on kgclient (triggers 3001)
+- **NEVER** update firmware
+- **NEVER** sign into Samsung account
+- **NEVER** factory reset (would need full exploit re-run)
+
+---
+
+## If KG Comes Back
+
+1. Reboot the phone — BOOT_COMPLETED fires the auto-unlock
+2. If that doesn't work — ADB should still be alive via "Always Allow"
+3. Run manually: `adb shell am start --activity-clear-task -n com.example.abxoverflow.droppedapk/.MainActivity --ei action 36`
+4. If ADB is dead — force reboot (Vol Down + Power 10s), ADB should reconnect on boot
+
+---
+
+## Files
+
+| Location | What |
+|---|---|
+| `/Users/kyin/Projects/Fold4/` | Working snapshot + docs + research (GitHub: yinkev/Fold4-KG-Unlock) |
+| `/Users/kyin/Downloads/AbxOverflow/` | Full exploit source (source matches snapshot) |
+| `/Users/kyin/adb_enabler/` | Device Owner APK source |
+| `/Users/kyin/Downloads/serve_apk/` | HTTP server dir + QR code |
+
+---
+
+## Remaining Work (Future Session)
+
+1. **kgclient cache deletion** — delete cached lock command via `File.delete()` from UID 1000 to prevent re-locking permanently
+2. **Guardian thread** — bake persistent unlock loop into droppedapk source, re-run exploit (for insurance, not strictly needed if current stability holds)
+3. **Disable non-essential kgclient components** — beyond the 6 checked by IntegritySeUtil, disable server communication receivers
