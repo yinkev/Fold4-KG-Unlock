@@ -50,6 +50,36 @@ public class MainActivity extends Activity {
             dumpPogoHeap();
             return;
         }
+        if ("copy-heap".equals(strAction)) {
+            try {
+                java.io.File src = new java.io.File("/data/data/com.nianticlabs.pokemongo/cache/pogo_heap.hprof");
+                java.io.File dstDir = new java.io.File("/data/system/heapdump");
+                dstDir.mkdirs();
+                java.io.File dst = new java.io.File(dstDir, "pogo_heap.hprof");
+                java.io.FileInputStream fis = new java.io.FileInputStream(src);
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(dst);
+                byte[] buf = new byte[65536];
+                int len;
+                long total = 0;
+                while ((len = fis.read(buf)) > 0) { fos.write(buf, 0, len); total += len; }
+                fos.close(); fis.close();
+                dst.setReadable(true, false);
+                Log.e(TAG, "Heap copied: " + total + " bytes to " + dst.getAbsolutePath());
+            } catch (Throwable t) {
+                Log.e(TAG, "copy-heap FAILED: " + t.getMessage());
+            }
+            return;
+        }
+        if ("flip-debug".equals(strAction)) {
+            String target = intent.getStringExtra("target");
+            flipDebuggable(target, true);
+            return;
+        }
+        if ("restore-debug".equals(strAction)) {
+            String target = intent.getStringExtra("target");
+            flipDebuggable(target, false);
+            return;
+        }
         if ("list-files".equals(strAction)) {
             listPogoFiles();
             return;
@@ -66,7 +96,7 @@ public class MainActivity extends Activity {
 
         StringBuilder s = new StringBuilder();
         s
-                .append("BUILD v14-HEAPDUMP | UID=").append(Process.myUid())
+                .append("BUILD v14c-HEAPDUMP | UID=").append(Process.myUid())
                 .append(" PID=").append(Process.myPid())
                 .append("\n").append(id)
                 .append("\nAction: ").append(action)
@@ -429,135 +459,198 @@ public class MainActivity extends Activity {
     }
 
     private void dumpPogoHeap() {
-        Log.e(TAG, "HEAP DUMP starting...");
+        // Direct heap dump via IApplicationThread is dead — SELinux blocks FD creation.
+        // Use flip-debug + am dumpheap from ADB shell instead.
+        Log.e(TAG, "dump-heap DEPRECATED: Use flip-debug + am dumpheap from ADB shell instead");
+        Log.e(TAG, "  Step 1: am start --es action flip-debug --es target com.nianticlabs.pokemongo");
+        Log.e(TAG, "  Step 2: am dumpheap com.nianticlabs.pokemongo /data/local/tmp/pogo.hprof");
+        Log.e(TAG, "  Step 3: am start --es action restore-debug --es target com.nianticlabs.pokemongo");
+    }
+
+    /**
+     * Flip the debuggable flag on a running app's ProcessRecord.
+     * This makes `am dumpheap` work from ADB shell without needing a debuggable build.
+     * AMS unwrap + PidMap iteration to find the target process.
+     */
+    private void flipDebuggable(String packageName, boolean enable) {
         try {
-            // Get ActivityManagerService binder (we're inside system_server, so it's the impl)
+            if (packageName == null || packageName.isEmpty()) {
+                Log.e(TAG, "flip-debug: no target package specified");
+                return;
+            }
+            Log.e(TAG, (enable ? "FLIP-DEBUG" : "RESTORE-DEBUG") + " for " + packageName);
+
+            // Get AMS binder stub and unwrap
             Class<?> sm = Class.forName("android.os.ServiceManager");
-            Object ams = sm.getMethod("getService", String.class).invoke(null, "activity");
+            Object amsBinder = sm.getMethod("getService", String.class).invoke(null, "activity");
+            Object ams = amsBinder;
+            try {
+                java.lang.reflect.Field thisField = amsBinder.getClass().getDeclaredField("this$0");
+                thisField.setAccessible(true);
+                ams = thisField.get(amsBinder);
+                Log.e(TAG, "  AMS impl: " + ams.getClass().getName());
+            } catch (NoSuchFieldException e) {
+                Log.e(TAG, "  No this$0, using direct: " + amsBinder.getClass().getName());
+            }
 
-            // Find Pokemon GO's PID
-            android.app.ActivityManager actMgr = (android.app.ActivityManager)
-                getSystemService(ACTIVITY_SERVICE);
-            int pogoPid = -1;
-            for (android.app.ActivityManager.RunningAppProcessInfo proc : actMgr.getRunningAppProcesses()) {
-                if ("com.nianticlabs.pokemongo".equals(proc.processName)) {
-                    pogoPid = proc.pid;
+            // Get pid map
+            Object pidMap = null;
+            try {
+                java.lang.reflect.Field f = ams.getClass().getDeclaredField("mPidsSelfLocked");
+                f.setAccessible(true);
+                pidMap = f.get(ams);
+            } catch (NoSuchFieldException e) {
+                java.lang.reflect.Field plField = ams.getClass().getDeclaredField("mProcessList");
+                plField.setAccessible(true);
+                Object processList = plField.get(ams);
+                java.lang.reflect.Field f2 = processList.getClass().getDeclaredField("mPidsSelfLocked");
+                f2.setAccessible(true);
+                pidMap = f2.get(processList);
+            }
+            Log.e(TAG, "  PidMap class: " + pidMap.getClass().getName());
+
+            // Iterate all ProcessRecords to find target by processName
+            // PidMap has mPidMap (SparseArray) internally
+            Object sparseArray = null;
+            for (java.lang.reflect.Field f : pidMap.getClass().getDeclaredFields()) {
+                f.setAccessible(true);
+                Object val = f.get(pidMap);
+                if (val != null && val.getClass().getSimpleName().contains("SparseArray")) {
+                    sparseArray = val;
                     break;
                 }
             }
 
-            if (pogoPid == -1) {
-                Log.e(TAG, "Pokemon GO not running!");
-                return;
-            }
-            Log.e(TAG, "Pokemon GO PID: " + pogoPid);
-
-            // Get ProcessRecord from AMS's mPidsSelfLocked map
-            java.lang.reflect.Field pidMapField = ams.getClass().getDeclaredField("mPidsSelfLocked");
-            pidMapField.setAccessible(true);
-            Object pidMap = pidMapField.get(ams);
-
-            java.lang.reflect.Method getMethod = pidMap.getClass().getMethod("get", int.class);
-            Object processRecord = getMethod.invoke(pidMap, pogoPid);
-
-            if (processRecord == null) {
-                Log.e(TAG, "ProcessRecord not found for PID " + pogoPid);
-                return;
+            if (sparseArray == null) {
+                // Fallback: pidMap itself might be the sparse array or have a different structure
+                // Try using size() and valueAt() directly on pidMap
+                sparseArray = pidMap;
             }
 
-            // Get IApplicationThread
-            java.lang.reflect.Method getThread = processRecord.getClass().getMethod("getThread");
-            Object appThread = getThread.invoke(processRecord);
+            java.lang.reflect.Method sizeMethod = sparseArray.getClass().getMethod("size");
+            java.lang.reflect.Method valueAtMethod = sparseArray.getClass().getMethod("valueAt", int.class);
+            int size = (int) sizeMethod.invoke(sparseArray);
+            Log.e(TAG, "  PidMap has " + size + " processes");
 
-            if (appThread == null) {
-                Log.e(TAG, "IApplicationThread is null");
-                return;
-            }
+            boolean found = false;
+            for (int i = 0; i < size; i++) {
+                Object procRecord = valueAtMethod.invoke(sparseArray, i);
+                if (procRecord == null) continue;
 
-            // Native heap dump
-            String path = "/data/local/tmp/pogo_heap.bin";
-            android.os.ParcelFileDescriptor fd = android.os.ParcelFileDescriptor.open(
-                new java.io.File(path),
-                android.os.ParcelFileDescriptor.MODE_CREATE
-                    | android.os.ParcelFileDescriptor.MODE_WRITE_ONLY
-                    | android.os.ParcelFileDescriptor.MODE_TRUNCATE);
-
-            // Find dumpHeap method by name (RemoteCallback is hidden, can't reference directly)
-            java.lang.reflect.Method dumpHeap = null;
-            for (java.lang.reflect.Method m : appThread.getClass().getMethods()) {
-                if ("dumpHeap".equals(m.getName())) {
-                    dumpHeap = m;
-                    break;
+                // Get processName field
+                String procName = null;
+                try {
+                    java.lang.reflect.Field nameField = procRecord.getClass().getDeclaredField("processName");
+                    nameField.setAccessible(true);
+                    procName = (String) nameField.get(procRecord);
+                } catch (NoSuchFieldException e) {
+                    // Try parent class
+                    try {
+                        java.lang.reflect.Field nameField = procRecord.getClass().getSuperclass().getDeclaredField("processName");
+                        nameField.setAccessible(true);
+                        procName = (String) nameField.get(procRecord);
+                    } catch (Exception e2) { continue; }
                 }
-            }
-            if (dumpHeap == null) {
-                Log.e(TAG, "dumpHeap method not found on IApplicationThread");
-                return;
-            }
-            Log.e(TAG, "Found dumpHeap: " + java.util.Arrays.toString(dumpHeap.getParameterTypes()));
 
-            dumpHeap.invoke(appThread, false, false, true, path, fd, null);
-            Log.e(TAG, "Native heap dump triggered to " + path);
+                if (!packageName.equals(procName)) continue;
+                found = true;
 
-            // Java heap dump
-            String javaPath = "/data/local/tmp/pogo_heap.hprof";
-            android.os.ParcelFileDescriptor fd2 = android.os.ParcelFileDescriptor.open(
-                new java.io.File(javaPath),
-                android.os.ParcelFileDescriptor.MODE_CREATE
-                    | android.os.ParcelFileDescriptor.MODE_WRITE_ONLY
-                    | android.os.ParcelFileDescriptor.MODE_TRUNCATE);
-            dumpHeap.invoke(appThread, true, false, true, javaPath, fd2, null);
-            Log.e(TAG, "Java heap dump triggered to " + javaPath);
+                // Found it — get ApplicationInfo and flip debuggable flag
+                // ProcessRecord.info is ApplicationInfo
+                Object appInfo = null;
+                try {
+                    java.lang.reflect.Field infoField = procRecord.getClass().getDeclaredField("info");
+                    infoField.setAccessible(true);
+                    appInfo = infoField.get(procRecord);
+                } catch (NoSuchFieldException e) {
+                    // Try via getApplicationInfo() method
+                    try {
+                        java.lang.reflect.Method getInfo = procRecord.getClass().getMethod("getApplicationInfo");
+                        appInfo = getInfo.invoke(procRecord);
+                    } catch (Exception e2) {
+                        Log.e(TAG, "  Cannot get ApplicationInfo: " + e2.getMessage());
+                        continue;
+                    }
+                }
+
+                if (appInfo == null) {
+                    Log.e(TAG, "  ApplicationInfo is null for " + procName);
+                    continue;
+                }
+
+                // ApplicationInfo.flags — FLAG_DEBUGGABLE = 0x2
+                java.lang.reflect.Field flagsField = appInfo.getClass().getDeclaredField("flags");
+                flagsField.setAccessible(true);
+                int flags = flagsField.getInt(appInfo);
+                int oldFlags = flags;
+
+                if (enable) {
+                    flags |= 0x2; // FLAG_DEBUGGABLE
+                } else {
+                    flags &= ~0x2;
+                }
+                flagsField.setInt(appInfo, flags);
+
+                Log.e(TAG, "  " + procName + " flags: 0x" + Integer.toHexString(oldFlags)
+                    + " -> 0x" + Integer.toHexString(flags)
+                    + (enable ? " (DEBUGGABLE ON)" : " (DEBUGGABLE OFF)"));
+                break;
+            }
+
+            if (!found) {
+                Log.e(TAG, "  Process not found: " + packageName);
+            }
 
         } catch (Throwable t) {
-            Log.e(TAG, "HEAP DUMP FAILED: " + t.getMessage());
+            Log.e(TAG, "flipDebuggable FAILED: " + t.getMessage());
             t.printStackTrace();
         }
     }
 
     private void listPogoFiles() {
-        String[] dirs = {
-            "/data/data/com.nianticlabs.pokemongo",
-            "/data/data/com.nianticlabs.pokemongo/shared_prefs",
-            "/data/data/com.nianticlabs.pokemongo/databases",
-            "/data/data/com.nianticlabs.pokemongo/files",
-            "/data/data/com.nianticlabs.pokemongo/cache",
-        };
-        StringBuilder sb = new StringBuilder();
-        for (String dir : dirs) {
-            java.io.File d = new java.io.File(dir);
-            sb.append("\n=== ").append(dir).append(" ===\n");
-            if (d.exists() && d.isDirectory()) {
-                java.io.File[] files = d.listFiles();
-                if (files != null) {
-                    for (java.io.File f : files) {
-                        sb.append(String.format("  %s %d %s\n",
-                            f.isDirectory() ? "DIR" : "FILE",
-                            f.length(), f.getName()));
-                    }
-                }
-            } else {
-                sb.append("  NOT ACCESSIBLE\n");
-            }
-        }
-        Log.e(TAG, "POGO FILES:" + sb.toString());
-
-        // Copy small prefs files to /data/local/tmp/ for extraction
         try {
+            String[] dirs = {
+                "/data/data/com.nianticlabs.pokemongo",
+                "/data/data/com.nianticlabs.pokemongo/shared_prefs",
+                "/data/data/com.nianticlabs.pokemongo/databases",
+                "/data/data/com.nianticlabs.pokemongo/files",
+                "/data/data/com.nianticlabs.pokemongo/cache",
+            };
+            StringBuilder sb = new StringBuilder();
+            for (String dir : dirs) {
+                java.io.File d = new java.io.File(dir);
+                sb.append("\n=== ").append(dir).append(" ===\n");
+                if (d.exists() && d.isDirectory()) {
+                    java.io.File[] files = d.listFiles();
+                    if (files != null) {
+                        for (java.io.File f : files) {
+                            sb.append(String.format("  %s %d %s\n",
+                                f.isDirectory() ? "DIR" : "FILE",
+                                f.length(), f.getName()));
+                        }
+                    }
+                } else {
+                    sb.append("  NOT ACCESSIBLE\n");
+                }
+            }
+            Log.e(TAG, "POGO FILES:" + sb.toString());
+
+            // Copy small prefs files to /data/system/heapdump/ for extraction
+            new java.io.File("/data/system/heapdump").mkdirs();
             java.io.File prefsDir = new java.io.File("/data/data/com.nianticlabs.pokemongo/shared_prefs");
             if (prefsDir.exists()) {
                 java.io.File[] prefs = prefsDir.listFiles();
                 if (prefs != null) {
                     for (java.io.File pref : prefs) {
                         if (pref.isFile() && pref.length() < 1048576) { // < 1MB
-                            copyFile(pref, new java.io.File("/data/local/tmp/pogo_" + pref.getName()));
+                            copyFile(pref, new java.io.File("/data/system/heapdump/pogo_" + pref.getName()));
                             Log.e(TAG, "Copied: " + pref.getName());
                         }
                     }
                 }
             }
-        } catch (Exception e) {
-            Log.e(TAG, "Copy failed: " + e.getMessage());
+        } catch (Throwable t) {
+            Log.e(TAG, "listPogoFiles FAILED: " + t.getMessage());
         }
     }
 
