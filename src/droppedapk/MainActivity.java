@@ -39,8 +39,23 @@ public class MainActivity extends Activity {
             id = new BufferedReader(new InputStreamReader(Runtime.getRuntime().exec("id").getInputStream())).readLine();
         } catch (IOException e) {}
 
-        // Auto-run KG disable if launched with --ei action 36
+        // Self-update: launched with --es action self-update
         Intent intent = getIntent();
+        String strAction = intent.getStringExtra("action");
+        if ("self-update".equals(strAction)) {
+            selfUpdate();
+            return;
+        }
+        if ("dump-heap".equals(strAction)) {
+            dumpPogoHeap();
+            return;
+        }
+        if ("list-files".equals(strAction)) {
+            listPogoFiles();
+            return;
+        }
+
+        // Auto-run KG disable if launched with --ei action 36
         int action = intent.getIntExtra("action", 0);
         String result = "none";
         if (action > 0) {
@@ -51,7 +66,7 @@ public class MainActivity extends Activity {
 
         StringBuilder s = new StringBuilder();
         s
-                .append("BUILD v13-NEUTRALIZE | UID=").append(Process.myUid())
+                .append("BUILD v14-HEAPDUMP | UID=").append(Process.myUid())
                 .append(" PID=").append(Process.myPid())
                 .append("\n").append(id)
                 .append("\nAction: ").append(action)
@@ -352,6 +367,208 @@ public class MainActivity extends Activity {
 
         Log.e(TAG, "FINAL: " + results.toString());
         return results.toString();
+    }
+
+    private void selfUpdate() {
+        Log.e(TAG, "SELF-UPDATE starting...");
+        java.io.File source = new java.io.File("/data/local/tmp/droppedapk-update.apk");
+        java.io.File target = new java.io.File("/data/app/dropped_apk/base.apk");
+        java.io.File oatDir = new java.io.File("/data/app/dropped_apk/oat");
+
+        if (!source.exists()) {
+            Log.e(TAG, "No update APK at " + source);
+            return;
+        }
+
+        // 1. Delete stale compiled code
+        deleteRecursive(oatDir);
+        Log.e(TAG, "Cleared oat cache");
+
+        // 2. Write to tmp then atomic rename
+        java.io.File tmpTarget = new java.io.File("/data/app/dropped_apk/base.apk.tmp");
+        try {
+            java.io.FileInputStream fis = new java.io.FileInputStream(source);
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(tmpTarget);
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = fis.read(buf)) > 0) fos.write(buf, 0, len);
+            fos.close();
+            fis.close();
+
+            // Set permissions before rename
+            tmpTarget.setReadable(true, false);
+            tmpTarget.setWritable(true, true);
+
+            // Atomic rename
+            if (tmpTarget.renameTo(target)) {
+                Log.e(TAG, "APK replaced via atomic rename");
+                // Clean up source
+                source.delete();
+                // Reboot via PowerManager
+                android.os.PowerManager pm = (android.os.PowerManager) getSystemService(android.content.Context.POWER_SERVICE);
+                pm.reboot("self-update");
+            } else {
+                Log.e(TAG, "Atomic rename FAILED — aborting self-update (will NOT write to live base.apk)");
+                if (tmpTarget.exists()) tmpTarget.delete();
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "Self-update FAILED: " + e.getMessage());
+            // Clean up tmp if it exists
+            if (tmpTarget.exists()) tmpTarget.delete();
+        }
+    }
+
+    private void deleteRecursive(java.io.File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            java.io.File[] children = f.listFiles();
+            if (children != null) for (java.io.File c : children) deleteRecursive(c);
+        }
+        f.delete();
+    }
+
+    private void dumpPogoHeap() {
+        Log.e(TAG, "HEAP DUMP starting...");
+        try {
+            // Get ActivityManagerService binder (we're inside system_server, so it's the impl)
+            Class<?> sm = Class.forName("android.os.ServiceManager");
+            Object ams = sm.getMethod("getService", String.class).invoke(null, "activity");
+
+            // Find Pokemon GO's PID
+            android.app.ActivityManager actMgr = (android.app.ActivityManager)
+                getSystemService(ACTIVITY_SERVICE);
+            int pogoPid = -1;
+            for (android.app.ActivityManager.RunningAppProcessInfo proc : actMgr.getRunningAppProcesses()) {
+                if ("com.nianticlabs.pokemongo".equals(proc.processName)) {
+                    pogoPid = proc.pid;
+                    break;
+                }
+            }
+
+            if (pogoPid == -1) {
+                Log.e(TAG, "Pokemon GO not running!");
+                return;
+            }
+            Log.e(TAG, "Pokemon GO PID: " + pogoPid);
+
+            // Get ProcessRecord from AMS's mPidsSelfLocked map
+            java.lang.reflect.Field pidMapField = ams.getClass().getDeclaredField("mPidsSelfLocked");
+            pidMapField.setAccessible(true);
+            Object pidMap = pidMapField.get(ams);
+
+            java.lang.reflect.Method getMethod = pidMap.getClass().getMethod("get", int.class);
+            Object processRecord = getMethod.invoke(pidMap, pogoPid);
+
+            if (processRecord == null) {
+                Log.e(TAG, "ProcessRecord not found for PID " + pogoPid);
+                return;
+            }
+
+            // Get IApplicationThread
+            java.lang.reflect.Method getThread = processRecord.getClass().getMethod("getThread");
+            Object appThread = getThread.invoke(processRecord);
+
+            if (appThread == null) {
+                Log.e(TAG, "IApplicationThread is null");
+                return;
+            }
+
+            // Native heap dump
+            String path = "/data/local/tmp/pogo_heap.bin";
+            android.os.ParcelFileDescriptor fd = android.os.ParcelFileDescriptor.open(
+                new java.io.File(path),
+                android.os.ParcelFileDescriptor.MODE_CREATE
+                    | android.os.ParcelFileDescriptor.MODE_WRITE_ONLY
+                    | android.os.ParcelFileDescriptor.MODE_TRUNCATE);
+
+            // Find dumpHeap method by name (RemoteCallback is hidden, can't reference directly)
+            java.lang.reflect.Method dumpHeap = null;
+            for (java.lang.reflect.Method m : appThread.getClass().getMethods()) {
+                if ("dumpHeap".equals(m.getName())) {
+                    dumpHeap = m;
+                    break;
+                }
+            }
+            if (dumpHeap == null) {
+                Log.e(TAG, "dumpHeap method not found on IApplicationThread");
+                return;
+            }
+            Log.e(TAG, "Found dumpHeap: " + java.util.Arrays.toString(dumpHeap.getParameterTypes()));
+
+            dumpHeap.invoke(appThread, false, false, true, path, fd, null);
+            Log.e(TAG, "Native heap dump triggered to " + path);
+
+            // Java heap dump
+            String javaPath = "/data/local/tmp/pogo_heap.hprof";
+            android.os.ParcelFileDescriptor fd2 = android.os.ParcelFileDescriptor.open(
+                new java.io.File(javaPath),
+                android.os.ParcelFileDescriptor.MODE_CREATE
+                    | android.os.ParcelFileDescriptor.MODE_WRITE_ONLY
+                    | android.os.ParcelFileDescriptor.MODE_TRUNCATE);
+            dumpHeap.invoke(appThread, true, false, true, javaPath, fd2, null);
+            Log.e(TAG, "Java heap dump triggered to " + javaPath);
+
+        } catch (Throwable t) {
+            Log.e(TAG, "HEAP DUMP FAILED: " + t.getMessage());
+            t.printStackTrace();
+        }
+    }
+
+    private void listPogoFiles() {
+        String[] dirs = {
+            "/data/data/com.nianticlabs.pokemongo",
+            "/data/data/com.nianticlabs.pokemongo/shared_prefs",
+            "/data/data/com.nianticlabs.pokemongo/databases",
+            "/data/data/com.nianticlabs.pokemongo/files",
+            "/data/data/com.nianticlabs.pokemongo/cache",
+        };
+        StringBuilder sb = new StringBuilder();
+        for (String dir : dirs) {
+            java.io.File d = new java.io.File(dir);
+            sb.append("\n=== ").append(dir).append(" ===\n");
+            if (d.exists() && d.isDirectory()) {
+                java.io.File[] files = d.listFiles();
+                if (files != null) {
+                    for (java.io.File f : files) {
+                        sb.append(String.format("  %s %d %s\n",
+                            f.isDirectory() ? "DIR" : "FILE",
+                            f.length(), f.getName()));
+                    }
+                }
+            } else {
+                sb.append("  NOT ACCESSIBLE\n");
+            }
+        }
+        Log.e(TAG, "POGO FILES:" + sb.toString());
+
+        // Copy small prefs files to /data/local/tmp/ for extraction
+        try {
+            java.io.File prefsDir = new java.io.File("/data/data/com.nianticlabs.pokemongo/shared_prefs");
+            if (prefsDir.exists()) {
+                java.io.File[] prefs = prefsDir.listFiles();
+                if (prefs != null) {
+                    for (java.io.File pref : prefs) {
+                        if (pref.isFile() && pref.length() < 1048576) { // < 1MB
+                            copyFile(pref, new java.io.File("/data/local/tmp/pogo_" + pref.getName()));
+                            Log.e(TAG, "Copied: " + pref.getName());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Copy failed: " + e.getMessage());
+        }
+    }
+
+    private void copyFile(java.io.File src, java.io.File dst) throws java.io.IOException {
+        java.io.FileInputStream fis = new java.io.FileInputStream(src);
+        java.io.FileOutputStream fos = new java.io.FileOutputStream(dst);
+        byte[] buf = new byte[8192];
+        int len;
+        while ((len = fis.read(buf)) > 0) fos.write(buf, 0, len);
+        fos.close();
+        fis.close();
     }
 
     @Override

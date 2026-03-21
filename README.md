@@ -9,7 +9,7 @@
 
 ![Platform](https://img.shields.io/badge/Android_13-Samsung-blue?style=flat-square)
 ![CVE](https://img.shields.io/badge/CVE--2024--34740-critical-red?style=flat-square)
-![Status](https://img.shields.io/badge/v12--PERMANENT-working-brightgreen?style=flat-square)
+![Status](https://img.shields.io/badge/v13--NEUTRALIZE-stable-brightgreen?style=flat-square)
 ![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-black?style=flat-square)
 
 </div>
@@ -37,15 +37,120 @@ This project unlocks a KG-locked Galaxy Z Fold 4 entirely from macOS, for free.
 
 ## Status
 
-> [!NOTE]
-> **v12-PERMANENT** — The unlock fires automatically on every boot via `BOOT_COMPLETED` using a 4-phase approach:
+> [!IMPORTANT]
+> **v13-NEUTRALIZE** is deployed and **proven stable** (80+ minutes, survived the 37-minute danger zone that defeated all prior versions).
 >
-> 1. **Wipe** kgclient cached data (File.delete — does not trigger error 3001)
-> 2. **Unlock** via KnoxGuardSeService reflection (proven 7-call sequence)
-> 3. **Firewall** block kgclient network via NetworkManagementService
-> 4. **Watchers** — FileObserver on kgclient data + ContentObserver on ADB_ENABLED
->
-> The phone is usable. kgclient may re-lock after ~37 minutes via in-memory state. Rebooting restores access instantly. ADB stays alive throughout via ContentObserver.
+> KG=Completed, ADB alive, phone fully usable. kgclient respawns every ~10s but **cannot re-lock** — its receivers are unregistered, callbacks nulled, alarms cancelled, and a watchdog force-stops it on every respawn.
+
+<br>
+<br>
+
+## The 6-Phase Approach
+
+On every `BOOT_COMPLETED`, the payload executes inside `system_server` as UID 1000:
+
+<br>
+
+### Phase 0: Wipe kgclient data
+
+Delete all cached lock commands from `/data/data/com.samsung.android.kgclient/` via `File.delete()`. Direct file deletion does NOT trigger error 3001 (only `pm clear` does).
+
+### Phase 1: Unlock sequence
+
+| Call | Effect |
+|---|---|
+| `setRemoteLockToLockscreen(false)` | Clear KG overlay |
+| `unlockCompleted()` | Mark unlock done |
+| `unbindFromLockScreen()` | Unbind from keyguard |
+| `tz_unlockScreen(0)` | RPMB: Locked(3) → Active(2) |
+| `tz_resetRPMB(0)` | Reset RPMB state |
+| Unregister kgService receivers | Prevent CONNECTIVITY_CHANGE re-lock |
+| `ADB_ENABLED = 1` | Re-enable USB debugging |
+| `knox.kg.state = "Completed"` | Set system property |
+
+### Phase 2: Firewall
+
+Block kgclient's network via `NetworkManagementService` firewall (STANDBY chain DENY rule) and `NetworkPolicyManager` (REJECT_METERED_BACKGROUND). Runs before neutralize to prevent any server contact during setup.
+
+### Phase 3: Watchers + Watchdog
+
+- **FileObserver** on all kgclient data subdirectories — instantly deletes any new files kgclient writes
+- **ContentObserver** on `ADB_ENABLED` — instantly re-enables ADB if anything disables it
+- **Periodic watchdog** — force-stops kgclient every 10 seconds if it respawns
+
+Zero CPU in steady state (event-driven). The watchdog is the only polling component.
+
+### Phase 4: Force-stop kgclient
+
+Immediately kills kgclient via `ActivityManager.forceStopPackage()`. Cancels all pending alarms, stops all services. kgclient respawns (Samsung's process restart) but gets killed again by the watchdog.
+
+### Phase 5: Neutralize KnoxGuardSeService
+
+The re-lock comes from **inside system_server**, not just kgclient. This phase attacks the service's internals:
+
+| Action | Effect |
+|---|---|
+| Null `mRemoteLockMonitorCallback` | Prevents lock monitor from firing |
+| Unregister ALL BroadcastReceiver fields | Catches USER_PRESENT + everything else |
+| Cancel `RETRY_LOCK` alarm | Prevents retry that leads to `powerOff()` |
+| Cancel `PROCESS_CHECK` alarm | Stops kgclient process monitoring |
+| Log all int fields | Recon: find TA state variable for future use |
+
+> [!WARNING]
+> DO NOT null `mLockSettingsService`. If the retry alarm fires and `setRetryLock` fails, `Utils.powerOff()` shuts down the phone.
+
+### Phase 6: Method Enumeration (recon only)
+
+Enumerates all methods and fields on `KnoxGuardSeService` — log only, no invocations. Used to map TX codes and plan future attacks.
+
+<br>
+<br>
+
+## Self-Update Mechanism
+
+v13+ includes a self-update system that avoids the fatal `adb install -r` UID corruption:
+
+```bash
+# Push new APK to staging location
+adb push droppedapk-v14.apk /data/local/tmp/droppedapk-update.apk
+
+# Trigger self-update (copies to /data/app/dropped_apk/base.apk, reboots)
+adb shell am start -n com.example.abxoverflow.droppedapk/.MainActivity \
+    --es action self-update
+```
+
+Atomic rename prevents corruption. First use pending with v14.
+
+<br>
+<br>
+
+## TA state machine
+
+<br>
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Prenormal
+    Prenormal --> Checking : enroll
+    Checking --> Active : enrolled
+    Active --> Locked : server lock
+    Locked --> Active : tz_unlockScreen(0)
+    Active --> Completed : server complete
+    Locked --> Completed : verifyCompleteToken
+
+    classDef target fill:#eff6ff,stroke:#2563eb,color:#1e40af
+    classDef danger fill:#fef2f2,stroke:#ef4444,color:#991b1b
+    classDef success fill:#f0fdf4,stroke:#16a34a,color:#166534
+
+    class Active target
+    class Locked danger
+    class Completed success
+```
+
+<br>
+
+The device starts at **Locked** (red). We move it to **Active** (blue) via `tz_unlockScreen(0)`. With v13-NEUTRALIZE, kgclient can no longer push it back — all re-lock paths are severed.
 
 <br>
 <br>
@@ -133,7 +238,7 @@ adb shell am start --activity-clear-task \
     --ei action 36
 ```
 
-Reboot. The 4-phase unlock runs automatically.
+Reboot. The 6-phase unlock runs automatically.
 
 <br>
 
@@ -142,82 +247,13 @@ Reboot. The 4-phase unlock runs automatically.
 <br>
 <br>
 
-## What the unlock does
-
-On `BOOT_COMPLETED`, the payload executes inside `system_server` as UID 1000:
-
-<br>
-
-### Phase 0: Wipe kgclient data
-
-Delete all cached lock commands from `/data/data/com.samsung.android.kgclient/` via `File.delete()`. Direct file deletion does NOT trigger error 3001 (only `pm clear` does). Without cached lock commands, kgclient can't replay the lock on boot.
-
-### Phase 1: Unlock sequence
-
-| Call | Effect |
-|---|---|
-| `setRemoteLockToLockscreen(false)` | Clear KG overlay |
-| `unlockCompleted()` | Mark unlock done |
-| `unbindFromLockScreen()` | Unbind from keyguard |
-| `tz_unlockScreen(0)` | RPMB: Locked(3) → Active(2) |
-| `tz_resetRPMB(0)` | Reset RPMB state |
-| Unregister kgService receivers | Prevent CONNECTIVITY_CHANGE re-lock |
-| `ADB_ENABLED = 1` | Re-enable USB debugging |
-| `knox.kg.state = "Completed"` | Set system property |
-
-### Phase 2: Firewall
-
-Block kgclient's network via `NetworkManagementService` firewall (STANDBY chain DENY rule) and `NetworkPolicyManager` (REJECT_METERED_BACKGROUND).
-
-### Phase 3: Watchers
-
-- **FileObserver** on all kgclient data subdirectories — instantly deletes any new files kgclient writes
-- **ContentObserver** on `ADB_ENABLED` — instantly re-enables ADB if anything disables it
-
-Zero CPU in steady state (event-driven, not polling).
-
-<br>
-<br>
-
-## TA state machine
-
-<br>
-
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> Prenormal
-    Prenormal --> Checking : enroll
-    Checking --> Active : enrolled
-    Active --> Locked : server lock
-    Locked --> Active : tz_unlockScreen(0)
-    Active --> Completed : server complete
-    Locked --> Completed : verifyCompleteToken
-
-    classDef target fill:#eff6ff,stroke:#2563eb,color:#1e40af
-    classDef danger fill:#fef2f2,stroke:#ef4444,color:#991b1b
-    classDef success fill:#f0fdf4,stroke:#16a34a,color:#166534
-
-    class Active target
-    class Locked danger
-    class Completed success
-```
-
-<br>
-
-The device starts at **Locked** (red). We move it to **Active** (blue) via `tz_unlockScreen(0)`.
-
-kgclient can push it back to Locked if it contacts Samsung's servers or replays cached in-memory state — that's the remaining problem.
-
-<br>
-<br>
-
 ## Do not
 
 > [!CAUTION]
-> - **`adb install -r` on droppedapk** — corrupts UID mapping. Bake changes into source before exploit.
+> - **`adb install -r` on droppedapk** — corrupts UID mapping. Use self-update mechanism instead.
 > - **`pm disable-user` on kgclient** — triggers error 8133 (abnormal detection).
 > - **`pm clear` on kgclient** — triggers error 3001 (data cleared detection).
+> - **Null `mLockSettingsService`** — causes `Utils.powerOff()` if retry alarm fires.
 > - **Update firmware** — may patch the exploit.
 > - **Sign into Samsung account** — gives Samsung a path to re-lock.
 
@@ -230,10 +266,10 @@ kgclient can push it back to Locked if it contacts Samsung's servers or replays 
 
 | Directory | Contents |
 |---|---|
-| `src/droppedapk/` | Payload — runs as UID 1000 in system_server (v12-PERMANENT) |
+| `src/droppedapk/` | Payload source — runs as UID 1000 in system_server (v14-HEAPDUMP dev) |
 | `src/exploit/` | CVE-2024-34740 stage controller |
 | `src/device-owner/` | QR provisioning APK |
-| `apk/` | Pre-built binaries |
+| `apk/` | Pre-built binaries (v11 through v13) |
 | `assets/` | SVG visuals, QR code |
 | `research/` | Agent research outputs (KG internals, error 8133, kgclient cache) |
 | `docs/` | Full documentation, handoff, session log |
@@ -241,18 +277,22 @@ kgclient can push it back to Locked if it contacts Samsung's servers or replays 
 <br>
 <br>
 
-## Remaining work
+## In Development
 
 <br>
 
-**kgclient in-memory re-lock** — The 4-phase approach handles on-disk state (file wipes, firewall, watchers) but kgclient retains the lock policy in memory. After ~37 minutes it calls lockScreen() using this in-memory state, bypassing all file-level defenses. Options under investigation:
+### v14-HEAPDUMP (source in repo, not yet deployed)
 
-- Force-stop kgclient after wiping data (risk: may trigger integrity check)
-- Hook the lockScreen() call path at the KnoxGuardSeService level via reflection
-- Find and null out the in-memory lock policy object
-- Achieve TA state Completed(4) for true permanent unlock
+Adds capabilities for Pokeball Plus key extraction:
 
-ADB stays alive throughout re-locks via ContentObserver, allowing automatic re-unlock via polling script.
+- **Heap dump bypass** — Dumps Pokemon GO's heap via `IApplicationThread.dumpHeap()` from system_server. Gets both native (`pogo_heap.bin`) and Java (`pogo_heap.hprof`) dumps. No SELinux/DEFEX issues from UID 1000.
+- **PoGO file listing** — Lists Pokemon GO's `/data/data/` contents and copies SharedPreferences to `/data/local/tmp/` for ADB extraction.
+- **Self-update refinements** — Firewall moved before neutralize for faster protection.
+- **Phase 6 → enumeration only** — No longer invokes methods blindly; log-only recon.
+
+### Pokeball Plus Key Extraction
+
+Algorithm verified: AES-ECB XOR with dual-session oracle. Need memory dump from PoGO to extract the BLE encryption key. v14 provides the dump mechanism.
 
 <br>
 <br>
@@ -265,15 +305,19 @@ ADB stays alive throughout re-locks via ContentObserver, allowing automatic re-u
 
 - **The class isn't on the boot classpath.** Load it via `kgService.getClass().getClassLoader()`, not `Class.forName()`.
 
-- **Active(2) is not the same as Completed(4).** kgclient can still receive a server command and transition back to Locked(3).
+- **Active(2) is not the same as Completed(4).** But with v13-NEUTRALIZE, Active(2) + neutralized service is functionally equivalent.
 
-- **Direct File.delete() does NOT trigger error 3001.** Only `pm clear` fires the PACKAGE_DATA_CLEARED broadcast that kgclient detects.
+- **Direct File.delete() does NOT trigger error 3001.** Only `pm clear` fires the PACKAGE_DATA_CLEARED broadcast.
 
-- **kgclient has in-memory state beyond files.** Wiping data dirs helps on boot but doesn't clear state already loaded into the running process.
+- **The re-lock comes from inside system_server**, not just kgclient. Killing kgclient alone is insufficient — you must neutralize `KnoxGuardSeService`'s internal state (callbacks, receivers, alarms).
+
+- **Force-stop does NOT trigger error 8133.** Only `pm disable-user` does. `forceStopPackage` is safe.
+
+- **SELinux, DEFEX, and battery** are all non-issues for this exploit. Confirmed via research.
 
 - **CVE-2024-34740 is reliable and repeatable** on Samsung Android 13 with July 2023 SPL.
 
-- **Never reinstall the droppedapk.** The UID corruption from `adb install -r` was the single biggest setback in this project.
+- **Never reinstall the droppedapk.** Use the self-update mechanism instead.
 
 <br>
 <br>

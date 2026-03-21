@@ -17,7 +17,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 /**
- * v13-NEUTRALIZE: Auto-unlock + neutralize KnoxGuardSeService internals + kgclient data wipe
+ * v14-HEAPDUMP: Auto-unlock + neutralize KnoxGuardSeService internals + kgclient data wipe
  * + network block + force-stop + guardian thread.
  * Runs as UID 1000 inside system_server on every BOOT_COMPLETED.
  */
@@ -30,13 +30,16 @@ public class LaunchReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        Log.e(TAG, "BOOT_COMPLETED received. v13-NEUTRALIZE unlock starting...");
+        Log.e(TAG, "BOOT_COMPLETED received. v14-HEAPDUMP unlock starting...");
 
         // === PHASE 0: Wipe kgclient cached data FIRST ===
         wipeKgclientData();
 
         // === PHASE 1: Run the full unlock sequence ===
         runUnlockSequence(context);
+
+        // === PHASE 2: Block kgclient network via firewall (BEFORE neutralize/enumerate) ===
+        blockKgclientNetwork(context);
 
         // === PHASE 5: Neutralize KnoxGuardSeService internals (prevents re-lock from system_server) ===
         Object kgService = null;
@@ -53,13 +56,10 @@ public class LaunchReceiver extends BroadcastReceiver {
             Log.e(TAG, "PHASE 5: Failed to get knoxguard_service: " + e.getMessage());
         }
 
-        // === PHASE 6: ZeroKnox-style service calls (TX 37/41/40 equivalents) ===
+        // === PHASE 6: Enumerate knoxguard_service methods (log only — recon) ===
         if (kgService != null) {
             tryZeroKnoxCalls(kgService);
         }
-
-        // === PHASE 2: Block kgclient network via firewall ===
-        blockKgclientNetwork(context);
 
         // === PHASE 3: Start guardian thread ===
         startWatchers(context);
@@ -76,7 +76,7 @@ public class LaunchReceiver extends BroadcastReceiver {
             Log.e(TAG, "Activity start failed: " + e.getMessage());
         }
 
-        Log.e(TAG, "v13-NEUTRALIZE unlock sequence complete.");
+        Log.e(TAG, "v14-HEAPDUMP unlock sequence complete.");
     }
 
     /**
@@ -337,13 +337,14 @@ public class LaunchReceiver extends BroadcastReceiver {
         }
 
         // Periodic force-stop: check every 10 seconds if kgclient is running, kill it
+        final Context appCtx = context.getApplicationContext();
         final Handler forceStopHandler = new Handler(Looper.getMainLooper());
         final Runnable forceStopRunnable = new Runnable() {
             @Override
             public void run() {
                 try {
                     android.app.ActivityManager am = (android.app.ActivityManager)
-                        context.getSystemService(Context.ACTIVITY_SERVICE);
+                        appCtx.getSystemService(Context.ACTIVITY_SERVICE);
                     java.util.List<android.app.ActivityManager.RunningAppProcessInfo> procs =
                         am.getRunningAppProcesses();
                     if (procs != null) {
@@ -356,8 +357,8 @@ public class LaunchReceiver extends BroadcastReceiver {
                             }
                         }
                     }
-                } catch (Exception e) {
-                    Log.e(TAG, "WATCHDOG: force-stop check failed: " + e.getMessage());
+                } catch (Throwable t) {
+                    Log.e(TAG, "WATCHDOG: force-stop check failed: " + t.getMessage());
                 }
                 forceStopHandler.postDelayed(this, 10000);
             }
@@ -473,88 +474,40 @@ public class LaunchReceiver extends BroadcastReceiver {
     }
 
     /**
-     * PHASE 6: ZeroKnox-style service calls.
-     * Enumerates all methods on KnoxGuardSeService and tries TX 37/41/40 equivalents:
-     * - TX 37: typically a state-clearing or verification method
-     * - TX 41: takes String param, called with "null"
-     * - TX 40: typically a data-clear or state-set method
+     * PHASE 6: ZeroKnox-style method enumeration (LOG ONLY — no invocations).
+     * Reconnaissance: enumerate all methods on KnoxGuardSeService so we can decide
+     * which ones to call after reviewing the output.
      */
     private void tryZeroKnoxCalls(Object kgService) {
-        Log.e(TAG, "PHASE 6: ZeroKnox-style calls on knoxguard_service...");
+        try {
+            Log.e(TAG, "PHASE 6: Enumerating knoxguard_service methods (log only)...");
 
-        // Step 1: Enumerate ALL declared methods and log them with index
-        Method[] methods = kgService.getClass().getDeclaredMethods();
-        Log.e(TAG, "  knoxguard_service has " + methods.length + " declared methods:");
-        for (int i = 0; i < methods.length; i++) {
-            StringBuilder sig = new StringBuilder();
-            sig.append("  [").append(i).append("] ").append(methods[i].getName()).append("(");
-            Class<?>[] params = methods[i].getParameterTypes();
-            for (int j = 0; j < params.length; j++) {
-                if (j > 0) sig.append(", ");
-                sig.append(params[j].getSimpleName());
-            }
-            sig.append(") -> ").append(methods[i].getReturnType().getSimpleName());
-            Log.e(TAG, sig.toString());
-        }
-
-        // Step 2: Try calling methods that look related to clearing/unlocking/verifying
-        String[] targetKeywords = {
-            "clear", "reset", "remove", "delete", "wipe", "unlock", "complete",
-            "verify", "finish", "disable", "deactivate", "release", "stop"
-        };
-        for (int i = 0; i < methods.length; i++) {
-            String name = methods[i].getName().toLowerCase();
-            boolean interesting = false;
-            for (String kw : targetKeywords) {
-                if (name.contains(kw)) {
-                    interesting = true;
-                    break;
+            Method[] methods = kgService.getClass().getDeclaredMethods();
+            Log.e(TAG, "  knoxguard_service has " + methods.length + " declared methods:");
+            for (int i = 0; i < methods.length; i++) {
+                StringBuilder sig = new StringBuilder();
+                sig.append("  [").append(i).append("] ").append(methods[i].getName()).append("(");
+                Class<?>[] params = methods[i].getParameterTypes();
+                for (int j = 0; j < params.length; j++) {
+                    if (j > 0) sig.append(", ");
+                    sig.append(params[j].getName());
                 }
+                sig.append(") -> ").append(methods[i].getReturnType().getName());
+                Log.e(TAG, sig.toString());
             }
-            if (!interesting) continue;
 
-            Method m = methods[i];
-            m.setAccessible(true);
-            Class<?>[] params = m.getParameterTypes();
-
-            try {
-                if (params.length == 0) {
-                    // No-arg method — just call it
-                    Object result = m.invoke(kgService);
-                    Log.e(TAG, "  ZEROCALL [" + i + "] " + m.getName() + "() => " + result);
-                } else if (params.length == 1 && params[0] == boolean.class) {
-                    // Boolean param — try false (disable/clear semantics)
-                    Object result = m.invoke(kgService, false);
-                    Log.e(TAG, "  ZEROCALL [" + i + "] " + m.getName() + "(false) => " + result);
-                } else if (params.length == 1 && params[0] == int.class) {
-                    // Int param — try 0
-                    Object result = m.invoke(kgService, 0);
-                    Log.e(TAG, "  ZEROCALL [" + i + "] " + m.getName() + "(0) => " + result);
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "  ZEROCALL [" + i + "] " + m.getName() + " FAILED: " +
-                    (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()));
+            // Also enumerate fields for complete picture
+            Field[] fields = kgService.getClass().getDeclaredFields();
+            Log.e(TAG, "  knoxguard_service has " + fields.length + " declared fields:");
+            for (int i = 0; i < fields.length; i++) {
+                Log.e(TAG, "  FIELD[" + i + "] " + fields[i].getName()
+                    + " : " + fields[i].getType().getName());
             }
+
+            Log.e(TAG, "PHASE 6: Enumeration complete.");
+        } catch (Throwable t) {
+            Log.e(TAG, "PHASE 6: Enumeration failed: " + t.getMessage());
         }
-
-        // Step 3: TX 41 equivalent — find any method taking a single String, call with "null"
-        Log.e(TAG, "  TX41-style: trying all single-String methods with 'null'...");
-        for (int i = 0; i < methods.length; i++) {
-            Method m = methods[i];
-            Class<?>[] params = m.getParameterTypes();
-            if (params.length == 1 && params[0] == String.class) {
-                m.setAccessible(true);
-                try {
-                    Object result = m.invoke(kgService, "null");
-                    Log.e(TAG, "  TX41 [" + i + "] " + m.getName() + "(\"null\") => " + result);
-                } catch (Exception e) {
-                    Log.e(TAG, "  TX41 [" + i + "] " + m.getName() + "(\"null\") FAILED: " +
-                        (e.getCause() != null ? e.getCause().getMessage() : e.getMessage()));
-                }
-            }
-        }
-
-        Log.e(TAG, "PHASE 6: ZeroKnox calls complete.");
     }
 
     /** Helper: call a method on an object with optional args */
