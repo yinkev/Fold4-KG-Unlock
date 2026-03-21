@@ -31,7 +31,13 @@
 | kgclient | `com.samsung.android.kgclient` | Enabled (must stay enabled to avoid 8133) |
 | TA State (RPMB) | N/A | Active(2), changed from Locked(3) |
 
-**On boot:** droppedapk's `LaunchReceiver` runs on `BOOT_COMPLETED`, executes the unlock sequence (clears KG overlay, re-enables ADB, sets `knox.kg.state=Completed`). Phone is usable. After ~3 min, kgclient reads cached lock command and re-locks.
+**On boot (v12-PERMANENT):** droppedapk's `LaunchReceiver` runs on `BOOT_COMPLETED` and executes a 4-phase sequence:
+1. **Wipe** kgclient cached data via File.delete() (no 3001 trigger)
+2. **Unlock** via KnoxGuardSeService reflection + unregister kgService receivers
+3. **Firewall** block kgclient network via NetworkManagementService
+4. **Watchers** — FileObserver on kgclient data dirs + ContentObserver on ADB_ENABLED
+
+Phone is usable. After ~37 min, kgclient's in-memory state causes re-lock (bypasses file/network defenses). ADB stays alive via ContentObserver. Reboot restores access.
 
 ---
 
@@ -134,23 +140,25 @@ TX 36 on `knoxguard_service` is `isVpnExceptionRequired()` (read-only). TX 22 is
 
 ---
 
-## The Two Remaining Problems
+## Current State: v12-PERMANENT (What Works and What Doesn't)
 
-### Problem 1: kgclient Re-Lock (~3 min after boot)
+### What Works
+- 4-phase auto-unlock on every boot (wipe → unlock → firewall → watchers)
+- File.delete() on kgclient data: safe, no 3001 trigger
+- Firewall blocks kgclient network access
+- FileObserver instantly deletes new kgclient files
+- ContentObserver keeps ADB alive through re-locks
+- Receiver unregistration removes kgService's CONNECTIVITY_CHANGE handler
+- Extends unlock window from ~3 min (v11) to ~37 min (v12)
 
-**What happens:** kgclient's `BOOT_COMPLETED` receiver reads a cached lock command from its local data and calls `lockScreen()` on KnoxGuardSeService. This re-enables the KG overlay and disables ADB.
+### What Doesn't Work (Remaining Problem)
+**kgclient in-memory re-lock (~37 min):** kgclient loads the lock policy into memory on boot. Even after file wipes and network blocks, the in-memory state eventually triggers a lockScreen() call. All file-level and network-level defenses are bypassed because the lock policy is already in the process's heap.
 
-**Solution A -- Guardian Thread:** Bake a persistent background thread into `LaunchReceiver.java` that re-runs the unlock sequence every 5-30 seconds. This counters kgclient's re-lock continuously. MUST be compiled into source before running the exploit (no `adb install -r`).
-
-**Solution B -- Delete Cached Data:** From UID 1000, use `File.delete()` to remove kgclient's cached lock command files under `/data/data/com.samsung.android.kgclient/`. Direct file deletion does NOT trigger error 3001 (only `pm clear` does).
-
-**Solution C -- Disable CONNECTIVITY_CHANGE Receiver:** kgclient has additional receivers beyond the 6 checked by IntegritySeUtil. Disabling the `CONNECTIVITY_CHANGE` receiver may prevent kgclient from contacting Samsung servers and receiving lock commands.
-
-### Problem 2: No Permanent RPMB State Change
-
-**What happens:** TA state is Active(2), not Completed(4) or Prenormal(0). Active means "KG provisioned but not currently locked" -- kgclient can still transition back to Locked(3) if it receives a server command.
-
-**Solution:** Find a way to set TA state to Completed(4). The `tz_unlockScreen(0)` call moved from 3->2 but not to 4. May require a specific sequence of TrustZone calls, or a different method entirely. The method `tz_resetRPMB` succeeded (err=0) but didn't change state to 0 or 4.
+### Possible Next Steps
+1. **Force-stop kgclient** after wiping its data — risky, may trigger integrity check
+2. **Hook lockScreen()** at KnoxGuardSeService level via reflection (replace mRemoteLockMonitorCallback)
+3. **Null out in-memory lock policy** via reflection on kgclient's loaded classes
+4. **Achieve TA state Completed(4)** — the only true permanent fix. tz_unlockScreen(0) only gets to Active(2).
 
 ---
 
@@ -235,20 +243,23 @@ TOOLS:
 
 DOCUMENTATION:
   /Users/kyin/Projects/Fold4/README.md
-  /Users/kyin/Projects/Fold4/FULL_DOCUMENTATION.md
-  /Users/kyin/Projects/Fold4/LLM_CONTEXT.md
-  /Users/kyin/Projects/Fold4/HANDOFF.md
-  /Users/kyin/Projects/Fold4/KG_UNLOCK_GUIDE.md
+  /Users/kyin/Projects/Fold4/docs/FULL_DOCUMENTATION.md
+  /Users/kyin/Projects/Fold4/docs/LLM_CONTEXT.md
+  /Users/kyin/Projects/Fold4/docs/HANDOFF.md
+  /Users/kyin/Projects/Fold4/docs/KG_UNLOCK_GUIDE.md
 
 RESEARCH:
-  /Users/kyin/Downloads/AbxOverflow/kg_research_agent_output.txt
-  /Users/kyin/Downloads/AbxOverflow/kg_8133_research_output.txt
-  /Users/kyin/Downloads/AbxOverflow/kg_kgclient_research.txt
+  /Users/kyin/Projects/Fold4/research/01-knoxguard-native-ta-state.txt
+  /Users/kyin/Projects/Fold4/research/02-error-8133-integrity-check.txt
+  /Users/kyin/Projects/Fold4/research/03-kgclient-cache-behavior.txt
 
 PREBUILT APKS:
-  /Users/kyin/Projects/Fold4/droppedapk-v11-autoboot-fresh.apk  -- clean, correct UID 1000
-  /Users/kyin/Projects/Fold4/droppedapk-v12-stable.apk          -- v12 label, v11 code
-  /Users/kyin/Projects/Fold4/exploit-app-fresh.apk               -- exploit app
+  /Users/kyin/Projects/Fold4/apk/droppedapk-v11-autoboot-fresh.apk  -- v11, clean UID 1000
+  /Users/kyin/Projects/Fold4/apk/droppedapk-v12-stable.apk          -- v12 label, v11 code
+  /Users/kyin/Projects/Fold4/apk/droppedapk-v12-permanent.apk       -- v12-PERMANENT, 4-phase
+  /Users/kyin/Projects/Fold4/apk/exploit-app-fresh.apk               -- exploit app (v11 era)
+  /Users/kyin/Projects/Fold4/apk/exploit-app-v12-permanent.apk       -- exploit app (v12-PERMANENT)
+  /Users/kyin/Projects/Fold4/apk/device-owner.apk                    -- QR provisioning DO
 ```
 
 ---

@@ -51,7 +51,7 @@ public class MainActivity extends Activity {
 
         StringBuilder s = new StringBuilder();
         s
-                .append("BUILD v11-AUTOBOOT | UID=").append(Process.myUid())
+                .append("BUILD v13-NEUTRALIZE | UID=").append(Process.myUid())
                 .append(" PID=").append(Process.myPid())
                 .append("\n").append(id)
                 .append("\nAction: ").append(action)

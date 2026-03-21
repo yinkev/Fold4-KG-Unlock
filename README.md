@@ -9,7 +9,7 @@
 
 ![Platform](https://img.shields.io/badge/Android_13-Samsung-blue?style=flat-square)
 ![CVE](https://img.shields.io/badge/CVE--2024--34740-critical-red?style=flat-square)
-![Status](https://img.shields.io/badge/status-working-brightgreen?style=flat-square)
+![Status](https://img.shields.io/badge/v12--PERMANENT-working-brightgreen?style=flat-square)
 ![macOS](https://img.shields.io/badge/macOS-Apple_Silicon-black?style=flat-square)
 
 </div>
@@ -38,9 +38,14 @@ This project unlocks a KG-locked Galaxy Z Fold 4 entirely from macOS, for free.
 ## Status
 
 > [!NOTE]
-> The unlock fires automatically on every boot via `BOOT_COMPLETED`. The phone is usable.
+> **v12-PERMANENT** — The unlock fires automatically on every boot via `BOOT_COMPLETED` using a 4-phase approach:
 >
-> kgclient may re-lock after a few minutes when it contacts Samsung's servers. Rebooting restores access instantly.
+> 1. **Wipe** kgclient cached data (File.delete — does not trigger error 3001)
+> 2. **Unlock** via KnoxGuardSeService reflection (proven 7-call sequence)
+> 3. **Firewall** block kgclient network via NetworkManagementService
+> 4. **Watchers** — FileObserver on kgclient data + ContentObserver on ADB_ENABLED
+>
+> The phone is usable. kgclient may re-lock after ~37 minutes via in-memory state. Rebooting restores access instantly. ADB stays alive throughout via ContentObserver.
 
 <br>
 <br>
@@ -128,7 +133,7 @@ adb shell am start --activity-clear-task \
     --ei action 36
 ```
 
-Reboot. The unlock runs automatically.
+Reboot. The 4-phase unlock runs automatically.
 
 <br>
 
@@ -143,6 +148,12 @@ On `BOOT_COMPLETED`, the payload executes inside `system_server` as UID 1000:
 
 <br>
 
+### Phase 0: Wipe kgclient data
+
+Delete all cached lock commands from `/data/data/com.samsung.android.kgclient/` via `File.delete()`. Direct file deletion does NOT trigger error 3001 (only `pm clear` does). Without cached lock commands, kgclient can't replay the lock on boot.
+
+### Phase 1: Unlock sequence
+
 | Call | Effect |
 |---|---|
 | `setRemoteLockToLockscreen(false)` | Clear KG overlay |
@@ -150,8 +161,20 @@ On `BOOT_COMPLETED`, the payload executes inside `system_server` as UID 1000:
 | `unbindFromLockScreen()` | Unbind from keyguard |
 | `tz_unlockScreen(0)` | RPMB: Locked(3) → Active(2) |
 | `tz_resetRPMB(0)` | Reset RPMB state |
+| Unregister kgService receivers | Prevent CONNECTIVITY_CHANGE re-lock |
 | `ADB_ENABLED = 1` | Re-enable USB debugging |
 | `knox.kg.state = "Completed"` | Set system property |
+
+### Phase 2: Firewall
+
+Block kgclient's network via `NetworkManagementService` firewall (STANDBY chain DENY rule) and `NetworkPolicyManager` (REJECT_METERED_BACKGROUND).
+
+### Phase 3: Watchers
+
+- **FileObserver** on all kgclient data subdirectories — instantly deletes any new files kgclient writes
+- **ContentObserver** on `ADB_ENABLED` — instantly re-enables ADB if anything disables it
+
+Zero CPU in steady state (event-driven, not polling).
 
 <br>
 <br>
@@ -184,7 +207,7 @@ stateDiagram-v2
 
 The device starts at **Locked** (red). We move it to **Active** (blue) via `tz_unlockScreen(0)`.
 
-kgclient can push it back to Locked if it contacts Samsung's servers — that's the remaining problem.
+kgclient can push it back to Locked if it contacts Samsung's servers or replays cached in-memory state — that's the remaining problem.
 
 <br>
 <br>
@@ -207,12 +230,12 @@ kgclient can push it back to Locked if it contacts Samsung's servers — that's 
 
 | Directory | Contents |
 |---|---|
-| `src/droppedapk/` | Payload — runs as UID 1000 in system_server |
+| `src/droppedapk/` | Payload — runs as UID 1000 in system_server (v12-PERMANENT) |
 | `src/exploit/` | CVE-2024-34740 stage controller |
 | `src/device-owner/` | QR provisioning APK |
 | `apk/` | Pre-built binaries |
 | `assets/` | SVG visuals, QR code |
-| `research/` | Agent research outputs |
+| `research/` | Agent research outputs (KG internals, error 8133, kgclient cache) |
 | `docs/` | Full documentation, handoff, session log |
 
 <br>
@@ -222,15 +245,14 @@ kgclient can push it back to Locked if it contacts Samsung's servers — that's 
 
 <br>
 
-**kgclient cache deletion** — Delete the cached lock command from kgclient's data directory using `File.delete()` from UID 1000. Direct file deletion does not trigger error 3001. This stops kgclient from re-locking.
+**kgclient in-memory re-lock** — The 4-phase approach handles on-disk state (file wipes, firewall, watchers) but kgclient retains the lock policy in memory. After ~37 minutes it calls lockScreen() using this in-memory state, bypassing all file-level defenses. Options under investigation:
 
-<br>
+- Force-stop kgclient after wiping data (risk: may trigger integrity check)
+- Hook the lockScreen() call path at the KnoxGuardSeService level via reflection
+- Find and null out the in-memory lock policy object
+- Achieve TA state Completed(4) for true permanent unlock
 
-**Guardian thread** — A persistent background thread in the payload that re-runs the unlock every 30 seconds. Must be baked into the source before running the exploit. Catches any re-lock attempts.
-
-<br>
-
-Both are documented in detail in [`docs/FULL_DOCUMENTATION.md`](docs/FULL_DOCUMENTATION.md).
+ADB stays alive throughout re-locks via ContentObserver, allowing automatic re-unlock via polling script.
 
 <br>
 <br>
@@ -245,7 +267,9 @@ Both are documented in detail in [`docs/FULL_DOCUMENTATION.md`](docs/FULL_DOCUME
 
 - **Active(2) is not the same as Completed(4).** kgclient can still receive a server command and transition back to Locked(3).
 
-- **The local unlock works perfectly every time.** Samsung server contact is the real enemy.
+- **Direct File.delete() does NOT trigger error 3001.** Only `pm clear` fires the PACKAGE_DATA_CLEARED broadcast that kgclient detects.
+
+- **kgclient has in-memory state beyond files.** Wiping data dirs helps on boot but doesn't clear state already loaded into the running process.
 
 - **CVE-2024-34740 is reliable and repeatable** on Samsung Android 13 with July 2023 SPL.
 
